@@ -1,0 +1,136 @@
+# agentgateway config (SPEC §7.3): one OpenAI-compatible LLM route, one MCP
+# route, static wildcard routes /a2a/* and /mcp/* -> runtime with the a2a
+# policy (agent-card URL rewriting).
+#
+# Schema: https://github.com/agentgateway/agentgateway/blob/v0.8.2/schema/local.json
+# (verified against the pinned 0.8.2 image).
+#
+# No gateway-side jwtAuth on /a2a and /mcp: agentgateway 0.8.2 consumes the
+# Authorization header after validating it (verified empirically 2026-07-18,
+# in strict AND permissive mode), so the runtime would receive no token and
+# reject with 401 "missing bearer token". The runtime is the authoritative
+# OIDC validator (issuer + audience, standalone invariant) — end-to-end auth
+# stays enforced, the gateway contributes CORS + rate limiting.
+#
+# Browser hardening (SPEC §7.3): every browser-facing route carries a `cors`
+# policy scoped to the SPA origins (the SDK/CLI and the health job are not
+# browsers and are unaffected). /a2a and /mcp additionally carry a
+# `localRateLimit` token bucket (~60 requests/minute) as a coarse abuse guard;
+# state is per gateway instance. Both `cors` and `localRateLimit` are validated
+# against the 0.8.2 route-policy schema.
+config:
+  tracing:
+    otlpEndpoint: http://otel-collector:4318
+    otlpProtocol: http
+    randomSampling: true
+
+binds:
+  - port: 3000
+    listeners:
+      - routes:
+          # A2A agents served by the runtime (wildcard, card rewriting).
+          - name: a2a
+            matches:
+              - path:
+                  pathPrefix: /a2a/
+            policies:
+              a2a: {}
+              cors:
+                allowOrigins:
+                  - http://app.localhost
+                  - http://builder.localhost
+                allowHeaders:
+                  - authorization
+                  - content-type
+                  - a2a-version
+                  - traceparent
+                  - mcp-protocol-version
+                allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+              localRateLimit:
+                - type: requests
+                  maxTokens: 60
+                  tokensPerFill: 60
+                  fillInterval: 60s
+            backends:
+              - host: runtime:8000
+
+          # MCP servers served by the runtime (streamable HTTP passthrough).
+          - name: mcp
+            matches:
+              - path:
+                  pathPrefix: /mcp/
+            policies:
+              cors:
+                allowOrigins:
+                  - http://app.localhost
+                  - http://builder.localhost
+                allowHeaders:
+                  - authorization
+                  - content-type
+                  - a2a-version
+                  - traceparent
+                  - mcp-protocol-version
+                allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+              localRateLimit:
+                - type: requests
+                  maxTokens: 60
+                  tokensPerFill: 60
+                  fillInterval: 60s
+            backends:
+              - host: runtime:8000
+
+          # Runtime + registry management APIs.
+          - name: runtime-api
+            matches:
+              - path:
+                  pathPrefix: /runtime/
+            policies:
+              cors:
+                allowOrigins:
+                  - http://app.localhost
+                  - http://builder.localhost
+                allowHeaders:
+                  - authorization
+                  - content-type
+                  - a2a-version
+                  - traceparent
+                  - mcp-protocol-version
+                allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+              urlRewrite:
+                path:
+                  prefix: ""
+            backends:
+              - host: runtime:8000
+          - name: registry-api
+            matches:
+              - path:
+                  pathPrefix: /registry/
+            policies:
+              cors:
+                allowOrigins:
+                  - http://app.localhost
+                  - http://builder.localhost
+                allowHeaders:
+                  - authorization
+                  - content-type
+                  - a2a-version
+                  - traceparent
+                  - mcp-protocol-version
+                allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+              urlRewrite:
+                path:
+                  prefix: ""
+            backends:
+              - host: registry:8100
+
+          # OpenAI-compatible LLM route: the platform's single LLM egress.
+          - name: llm
+            matches:
+              - path:
+                  pathPrefix: /v1/
+            backends:
+              - ai:
+                  name: openai
+                  provider:
+                    openAI:
+                      model: gpt-5-mini

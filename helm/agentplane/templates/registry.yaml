@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentplane.fullname" . }}-registry
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: agentplane-registry
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - port: 8100
+      targetPort: 8100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentplane.fullname" . }}-registry
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.registry }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentplane-registry
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentplane-registry
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: registry
+          image: {{ .Values.images.registry }}
+          env:
+            - name: AGENTPLANE_REGISTRY_DB_URL
+              value: {{ include "agentplane.dbUrl" (list . "registry") | quote }}
+            - name: AGENTPLANE_REGISTRY_AUTH_MODE
+              value: oidc
+            - name: AGENTPLANE_REGISTRY_OIDC_ISSUER
+              value: {{ include "agentplane.issuer" . | quote }}
+            - name: AGENTPLANE_REGISTRY_OIDC_AUDIENCE
+              value: {{ .Values.oidc.audience | quote }}
+            - name: AGENTPLANE_REGISTRY_ROLES_CLAIM
+              value: {{ .Values.oidc.rolesClaim | quote }}
+            - name: AGENTPLANE_REGISTRY_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: AGENTPLANE_REGISTRY_USERNAME_CLAIM
+              value: {{ .Values.oidc.usernameClaim | quote }}
+            - name: AGENTPLANE_REGISTRY_ADMIN_ROLE
+              value: {{ .Values.oidc.adminRole | quote }}
+            - name: AGENTPLANE_REGISTRY_HEALTH_INTERVAL_S
+              value: {{ .Values.registry.healthIntervalS | quote }}
+            - name: AGENTPLANE_REGISTRY_HISTORY_RETENTION_H
+              value: {{ .Values.registry.historyRetentionH | quote }}
+            {{- if .Values.tracing.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.otlpEndpoint | quote }}
+            {{- end }}
+          ports:
+            - containerPort: 8100
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8100
+            periodSeconds: 10
+          {{- with .Values.resources.registry }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}

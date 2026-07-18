@@ -1,0 +1,51 @@
+# OTel collector -> Langfuse v3 OTLP ingestion (profile "langfuse").
+# Services export plain OTLP to http://otel-collector:4318; auth to the
+# backend lives here, never in service env.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  # Tracing is for user-facing LLM activity (chat messages, flow runs, token
+  # usage). Infrastructure noise is dropped here, centrally: health probes
+  # (registry health job fetching agent cards, healthz/readyz), CORS
+  # preflights, discovery GETs and management-API polling. Kept: POST /a2a
+  # and /mcp invocations, /v1 LLM calls, agentplane.* flow spans.
+  filter/noise:
+    error_mode: ignore
+    traces:
+      span:
+        - 'IsMatch(name, ".*\\.well-known/agent-card\\.json.*")'
+        - 'IsMatch(name, ".*/(healthz|readyz)$")'
+        - 'IsMatch(name, "^OPTIONS .*")'
+        - 'IsMatch(name, "^GET /a2a/.*")'
+        - 'IsMatch(name, "^GET /mcp/.*")'
+        # The HTTP transport spans around an invocation (gateway + runtime)
+        # are plumbing: dropping them makes agentplane.flow the trace's
+        # effective root, so tracing UIs show the agent run itself - name,
+        # input/output, real latency - instead of "POST /a2a/..." with the
+        # lifetime of an SSE connection.
+        - 'IsMatch(name, "^POST /a2a/.*")'
+        - 'IsMatch(name, "^POST /mcp/.*")'
+        - 'IsMatch(name, "^(GET|POST|PUT|PATCH|DELETE) /(api/v1|registry|runtime)/.*")'
+
+exporters:
+  otlp_http/langfuse:
+    # The exporter appends /v1/traces -> Langfuse's /api/public/otel/v1/traces.
+    endpoint: http://langfuse-web:3000/api/public/otel
+    headers:
+      # base64("pk-lf-local:sk-lf-local") — the LANGFUSE_INIT_* bootstrap keys
+      # from compose.yaml (local dev only, not a secret).
+      Authorization: "Basic cGstbGYtbG9jYWw6c2stbGYtbG9jYWw="
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [filter/noise, batch]
+      exporters: [otlp_http/langfuse]

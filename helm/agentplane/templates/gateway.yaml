@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentplane.fullname" . }}-gateway-config
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- if .Values.tracing.otlpEndpoint }}
+    config:
+      tracing:
+        otlpEndpoint: {{ .Values.tracing.otlpEndpoint }}
+        otlpProtocol: http
+        randomSampling: true
+    {{- end }}
+    binds:
+      - port: 3000
+        listeners:
+          - routes:
+              # A2A agents served by the runtime (wildcard, card rewriting).
+              # No gateway-side jwtAuth: the runtime is the authoritative OIDC
+              # validator (agentgateway 0.8.2 consumes the Authorization
+              # header after validating it).
+              - name: a2a
+                matches:
+                  - path:
+                      pathPrefix: /a2a/
+                policies:
+                  a2a: {}
+                  cors: &browser-cors
+                    allowOrigins:
+                      - {{ include "agentplane.appOrigin" . }}
+                      - {{ include "agentplane.builderOrigin" . }}
+                    allowHeaders:
+                      - authorization
+                      - content-type
+                      - a2a-version
+                      - traceparent
+                      - mcp-protocol-version
+                    allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+                  localRateLimit: &invoke-ratelimit
+                    - type: requests
+                      maxTokens: 60
+                      tokensPerFill: 60
+                      fillInterval: 60s
+                backends:
+                  - host: {{ include "agentplane.fullname" . }}-runtime:8000
+              - name: mcp
+                matches:
+                  - path:
+                      pathPrefix: /mcp/
+                policies:
+                  cors: *browser-cors
+                  localRateLimit: *invoke-ratelimit
+                backends:
+                  - host: {{ include "agentplane.fullname" . }}-runtime:8000
+              - name: runtime-api
+                matches:
+                  - path:
+                      pathPrefix: /runtime/
+                policies:
+                  cors: *browser-cors
+                  urlRewrite:
+                    path:
+                      prefix: ""
+                backends:
+                  - host: {{ include "agentplane.fullname" . }}-runtime:8000
+              - name: registry-api
+                matches:
+                  - path:
+                      pathPrefix: /registry/
+                policies:
+                  cors: *browser-cors
+                  urlRewrite:
+                    path:
+                      prefix: ""
+                backends:
+                  - host: {{ include "agentplane.fullname" . }}-registry:8100
+              # OpenAI-compatible LLM egress: keep OFF the public ingress
+              # (only /a2a, /mcp, /registry, /runtime are routed there).
+              - name: llm
+                matches:
+                  - path:
+                      pathPrefix: /v1/
+                backends:
+                  - ai:
+                      name: {{ .Values.llm.provider }}
+                      provider:
+                        openAI:
+                          model: {{ .Values.llm.model }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentplane.fullname" . }}-gateway
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: agentplane-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentplane.fullname" . }}-gateway
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.gateway }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentplane-gateway
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentplane-gateway
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/config: {{ .Values | toJson | sha256sum | trunc 16 }}
+    spec:
+      containers:
+        - name: agentgateway
+          image: {{ .Values.images.gateway }}
+          args: ["-f", "/etc/agentgateway/config.yaml"]
+          env:
+            {{- if .Values.llm.apiKeySecret }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.llm.apiKeySecret }}
+                  key: OPENAI_API_KEY
+            {{- end }}
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentgateway
+          {{- with .Values.resources.gateway }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "agentplane.fullname" . }}-gateway-config

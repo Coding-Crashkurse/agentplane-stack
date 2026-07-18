@@ -1,0 +1,15 @@
+apiVersion: v2
+name: agentplane
+description: >-
+  agentplane platform - A2A agents and MCP servers from declarative flow
+  definitions: agentgateway edge, registry, runtime, portal UI and low-code
+  builder, with optional bundled Keycloak and Postgres for self-contained
+  installs. Tracing (Langfuse/MLflow) is attached via an external OTLP
+  endpoint; see the README.
+type: application
+version: 0.1.0
+appVersion: "0.0.5"
+kubeVersion: ">=1.26.0-0"
+maintainers:
+  - name: agentplane
+    url: https://github.com/Coding-Crashkurse/agentplane

@@ -1,0 +1,74 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "agentplane.fullname" . }}
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.hosts.app }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agentplane.fullname" . }}-ui
+                port:
+                  number: 80
+    - host: {{ .Values.hosts.api }}
+      http:
+        paths:
+          # Public API surface: /a2a, /mcp, /registry, /runtime. The gateway's
+          # /v1 LLM egress is deliberately NOT routed here (open-proxy risk) -
+          # the runtime reaches it service-internally.
+          - path: /a2a
+            pathType: Prefix
+            backend: &gateway
+              service:
+                name: {{ include "agentplane.fullname" . }}-gateway
+                port:
+                  number: 3000
+          - path: /mcp
+            pathType: Prefix
+            backend: *gateway
+          - path: /registry
+            pathType: Prefix
+            backend: *gateway
+          - path: /runtime
+            pathType: Prefix
+            backend: *gateway
+    {{- if .Values.keycloak.enabled }}
+    - host: {{ .Values.hosts.auth }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agentplane.fullname" . }}-keycloak
+                port:
+                  number: 8080
+    {{- end }}
+    {{- if .Values.builder.enabled }}
+    - host: {{ .Values.hosts.builder }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agentplane.fullname" . }}-builder
+                port:
+                  number: 8010
+    {{- end }}
+{{- end }}

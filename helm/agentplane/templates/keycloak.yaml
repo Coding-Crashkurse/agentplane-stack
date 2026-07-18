@@ -1,0 +1,98 @@
+{{- if .Values.keycloak.enabled }}
+{{- if .Values.keycloak.importRealm }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentplane.fullname" . }}-keycloak-realm
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+data:
+  # Demo realm rewritten to the deployed hosts. For production, disable
+  # importRealm and provision the realm yourself (see README hardening).
+  agentplane-realm.json: |-
+{{ .Files.Get "files/agentplane-realm.json"
+   | replace "http://app.localhost" (include "agentplane.appOrigin" .)
+   | replace "http://builder.localhost" (include "agentplane.builderOrigin" .)
+   | replace "http://langfuse.localhost" (printf "https://traces.%s" .Values.hosts.app)
+   | indent 4 }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentplane.fullname" . }}-keycloak
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: agentplane-keycloak
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentplane.fullname" . }}-keycloak
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentplane-keycloak
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentplane-keycloak
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: keycloak
+          image: {{ .Values.images.keycloak }}
+          args:
+            - start
+            - --proxy-headers=xforwarded
+            - --http-enabled=true
+            {{- if .Values.keycloak.importRealm }}
+            - --import-realm
+            {{- end }}
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: {{ .Values.keycloak.adminUser | quote }}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: {{ .Values.keycloak.adminPassword | quote }}
+            - name: KC_HOSTNAME
+              value: https://{{ .Values.hosts.auth }}
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://{{ include "agentplane.postgresHost" . }}/keycloak
+            - name: KC_DB_USERNAME
+              value: {{ .Values.postgres.user | quote }}
+            - name: KC_DB_PASSWORD
+              value: {{ .Values.postgres.password | quote }}
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          {{- with .Values.resources.keycloak }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.keycloak.importRealm }}
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+          {{- end }}
+      {{- if .Values.keycloak.importRealm }}
+      volumes:
+        - name: realm
+          configMap:
+            name: {{ include "agentplane.fullname" . }}-keycloak-realm
+      {{- end }}
+{{- end }}

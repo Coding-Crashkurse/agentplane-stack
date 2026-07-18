@@ -1,0 +1,55 @@
+{{- if .Values.builder.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentplane.fullname" . }}-builder
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: agentplane-builder
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - port: 8010
+      targetPort: 8010
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentplane.fullname" . }}-builder
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.builder }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentplane-builder
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentplane-builder
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: builder
+          image: {{ .Values.images.builder }}
+          env:
+            - name: BUILDER_AUTH_MODE
+              value: oidc
+            - name: BUILDER_OIDC_ISSUER
+              value: {{ include "agentplane.issuer" . | quote }}
+            - name: BUILDER_OIDC_AUDIENCE
+              value: {{ .Values.oidc.audience | quote }}
+            - name: BUILDER_OIDC_CLIENT_ID
+              value: agentplane-builder
+            - name: BUILDER_RUNTIME_URL
+              value: http://{{ include "agentplane.fullname" . }}-gateway:3000/runtime
+            - name: BUILDER_REGISTRY_UI_URL
+              value: {{ include "agentplane.appOrigin" . }}/registry
+            - name: BUILDER_HOST_URL
+              value: {{ include "agentplane.builderOrigin" . | quote }}
+          ports:
+            - containerPort: 8010
+          {{- with .Values.resources.builder }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

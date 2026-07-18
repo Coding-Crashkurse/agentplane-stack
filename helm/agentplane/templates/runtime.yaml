@@ -1,0 +1,102 @@
+{{- if not .Values.runtime.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "agentplane.fullname" . }}-runtime
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+stringData:
+  AGENTPLANE_RUNTIME_SECRET_KEY: {{ required "runtime.secretKey (a Fernet key) or runtime.existingSecret is required" .Values.runtime.secretKey | quote }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentplane.fullname" . }}-runtime
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: agentplane-runtime
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentplane.fullname" . }}-runtime
+  labels: {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  # Serving state is per-process for now - keep a single replica (recreate,
+  # not rolling, so two instances never serve the same endpoints).
+  replicas: {{ .Values.replicaCount.runtime }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentplane-runtime
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentplane-runtime
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: runtime
+          image: {{ .Values.images.runtime }}
+          env:
+            - name: AGENTPLANE_RUNTIME_DB_URL
+              value: {{ include "agentplane.dbUrl" (list . "runtime") | quote }}
+            - name: AGENTPLANE_RUNTIME_PUBLIC_BASE_URL
+              value: {{ include "agentplane.publicBaseUrl" . | quote }}
+            - name: AGENTPLANE_RUNTIME_REGISTRY_URL
+              value: http://{{ include "agentplane.fullname" . }}-registry:8100
+            - name: AGENTPLANE_RUNTIME_REGISTRY_CLIENT_ID
+              value: {{ .Values.runtime.registryClientId | quote }}
+            - name: AGENTPLANE_RUNTIME_REGISTRY_CLIENT_SECRET
+              value: {{ .Values.runtime.registryClientSecret | quote }}
+            - name: AGENTPLANE_RUNTIME_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtime.existingSecret | default (printf "%s-runtime" (include "agentplane.fullname" .)) }}
+                  key: AGENTPLANE_RUNTIME_SECRET_KEY
+            - name: AGENTPLANE_RUNTIME_LLM_BASE_URL
+              value: http://{{ include "agentplane.fullname" . }}-gateway:3000/v1
+            - name: AGENTPLANE_RUNTIME_AUTH_MODE
+              value: oidc
+            - name: AGENTPLANE_RUNTIME_OIDC_ISSUER
+              value: {{ include "agentplane.issuer" . | quote }}
+            - name: AGENTPLANE_RUNTIME_OIDC_AUDIENCE
+              value: {{ .Values.oidc.audience | quote }}
+            - name: AGENTPLANE_RUNTIME_ROLES_CLAIM
+              value: {{ .Values.oidc.rolesClaim | quote }}
+            - name: AGENTPLANE_RUNTIME_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: AGENTPLANE_RUNTIME_USERNAME_CLAIM
+              value: {{ .Values.oidc.usernameClaim | quote }}
+            - name: AGENTPLANE_RUNTIME_ADMIN_ROLE
+              value: {{ .Values.oidc.adminRole | quote }}
+            - name: AGENTPLANE_RUNTIME_BUILDER_ROLE
+              value: {{ .Values.oidc.builderRole | quote }}
+            - name: AGENTPLANE_RUNTIME_TASK_STORE
+              value: {{ .Values.runtime.taskStore | quote }}
+            - name: AGENTPLANE_RUNTIME_MAX_DEPLOYMENTS_PER_OWNER
+              value: {{ .Values.runtime.maxDeploymentsPerOwner | quote }}
+            # a2a-sdk internal event-queue spans are noise (chat-focused traces)
+            - name: OTEL_INSTRUMENTATION_A2A_SDK_ENABLED
+              value: "false"
+            {{- if .Values.tracing.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.otlpEndpoint | quote }}
+            {{- end }}
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 10
+          {{- with .Values.resources.runtime }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}

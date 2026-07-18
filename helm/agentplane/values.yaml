@@ -1,0 +1,107 @@
+# agentplane platform - Helm values.
+#
+# Minimum you MUST set for any real install:
+#   hosts.*            your domains (public DNS -> ingress)
+#   runtime.secretKey  a generated Fernet key (resources are unusable without it)
+#   llm.apiKeySecret   an existing Secret carrying OPENAI_API_KEY
+#   keycloak.adminPassword / postgres.password (when the bundled ones are used)
+#
+# The pods validate OIDC tokens against the issuer URL, so the cluster must be
+# able to resolve and reach `hosts.auth` (public DNS, or a CoreDNS rewrite to
+# your ingress) when the bundled Keycloak is used.
+
+hosts:
+  app: app.example.com
+  api: api.example.com
+  auth: auth.example.com
+  builder: builder.example.com
+
+ingress:
+  enabled: true
+  className: ""
+  # e.g. cert-manager.io/cluster-issuer: letsencrypt
+  annotations: {}
+  # standard Ingress TLS list; leave empty for plain HTTP (dev only)
+  tls: []
+
+images:
+  gateway: ghcr.io/agentgateway/agentgateway:0.8.2 # exact pin (config schema)
+  registry: ghcr.io/coding-crashkurse/agentplane-registry:0.0.5
+  runtime: ghcr.io/coding-crashkurse/agentplane-runtime:0.0.5
+  ui: ghcr.io/coding-crashkurse/agentplane-ui:0.2.0
+  builder: ghcr.io/coding-crashkurse/agentplane-builder:0.2.0
+  keycloak: quay.io/keycloak/keycloak:26.0
+  postgres: postgres:16
+
+oidc:
+  # External IdP (Entra ID, Okta, ...): set the issuer and disable the bundled
+  # keycloak. Empty issuer = derived from the bundled Keycloak
+  # (https://<hosts.auth>/realms/<keycloak.realm>).
+  issuer: ""
+  audience: agentplane
+  rolesClaim: realm_access.roles
+  groupsClaim: groups
+  usernameClaim: preferred_username
+  adminRole: admin
+  builderRole: builder
+
+keycloak:
+  enabled: true
+  realm: agentplane
+  adminUser: admin
+  adminPassword: change-me # bootstrap admin; rotate after first login
+  # Import the demo realm (clients, roles, demo users) on first start. Turn
+  # OFF for production and provision the realm yourself, or edit
+  # files/agentplane-realm.json first (demo users! see README hardening).
+  importRealm: true
+
+postgres:
+  enabled: true
+  user: agentplane
+  password: agentplane # change for any real install
+  storage: 10Gi
+  storageClassName: ""
+  # postgres.enabled=false: point at your own server (databases `registry`,
+  # `runtime` and - with bundled keycloak - `keycloak` must exist).
+  externalHost: ""
+
+llm:
+  # agentgateway's OpenAI-compatible egress: the platform's single LLM route.
+  provider: openai
+  model: gpt-5-mini
+  # Name of an existing Secret in the release namespace with key OPENAI_API_KEY.
+  apiKeySecret: ""
+
+runtime:
+  # Fernet key for resource secrets - REQUIRED, generate with:
+  #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  # Alternatively set existingSecret to a Secret with key AGENTPLANE_RUNTIME_SECRET_KEY.
+  secretKey: ""
+  existingSecret: ""
+  taskStore: database # persistent conversations; "memory" disables
+  maxDeploymentsPerOwner: 25
+  # Service-account client-credentials for self-registration (must match the
+  # realm; the bundled realm ships this client).
+  registryClientId: agentplane-cli
+  registryClientSecret: agentplane-cli-secret
+
+registry:
+  healthIntervalS: 60
+  historyRetentionH: 168
+
+builder:
+  enabled: true
+
+tracing:
+  # OTLP/HTTP endpoint for traces (e.g. an otel-collector in front of
+  # Langfuse; see README). Empty = tracing off.
+  otlpEndpoint: ""
+
+resources: {} # optional per-service resource requests/limits, keyed by service name
+
+replicaCount:
+  gateway: 1
+  registry: 1
+  runtime: 1 # keep 1: serving state is per-process until multi-instance lands
+  ui: 1
+  builder: 1
